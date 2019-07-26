@@ -130,6 +130,13 @@ namespace DataModel {
   export
   type CellRegion = 'body' | 'row-header' | 'column-header' | 'corner-header';
 
+  export
+  interface ICellIdentifier {
+    region: CellRegion;
+    row: number;
+    column: number;
+  };
+
   /**
    * The metadata for a column in a data model.
    */

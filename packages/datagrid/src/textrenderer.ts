@@ -12,6 +12,7 @@ import {
 import {
   GraphicsContext
 } from './graphicscontext';
+import { StateModel } from './state';
 
 
 /**
@@ -29,6 +30,8 @@ class TextRenderer extends CellRenderer {
     this.font = options.font || '12px sans-serif';
     this.textColor = options.textColor || '#000000';
     this.backgroundColor = options.backgroundColor || '';
+    this.backgroundColorSelected = options.backgroundColorSelected || 'rgb(184,219,255)';
+    this.backgroundColorHilited = options.backgroundColorHilited || 'rgba(219,184,255,0.6)';
     this.verticalAlignment = options.verticalAlignment || 'center';
     this.horizontalAlignment = options.horizontalAlignment || 'left';
     this.format = options.format || TextRenderer.formatGeneric();
@@ -48,6 +51,16 @@ class TextRenderer extends CellRenderer {
    * The CSS color for the cell background.
    */
   readonly backgroundColor: CellRenderer.ConfigOption<string>;
+
+  /**
+   * The CSS color for the cell background for selected state.
+   */
+  readonly backgroundColorSelected: CellRenderer.ConfigOption<string>;
+
+  /**
+   * The CSS color for the cell background for highlighted state.
+   */
+  readonly backgroundColorHilited: CellRenderer.ConfigOption<string>;
 
   /**
    * The vertical alignment for the cell text.
@@ -124,6 +137,72 @@ class TextRenderer extends CellRenderer {
   drawBackground(gc: GraphicsContext, config: CellRenderer.ICellConfig): void {
     // Resolve the background color for the cell.
     let color = CellRenderer.resolveOption(this.backgroundColor, config);
+
+    const neighborCellSelected = (rowOffset: number, columnOffset: number): boolean => {
+      const neighborCellState = this.stateModel ? this.stateModel.cellState(
+        config.region, config.row + rowOffset, config.column + columnOffset
+      ) : StateModel.defaultState;
+
+      return neighborCellState.selected;
+    };
+
+    const cellState = this.stateModel ? this.stateModel.cellState(
+      config.region, config.row, config.column
+    ) : StateModel.defaultState;
+
+    if (cellState.selected) {
+      const selectedColor = CellRenderer.resolveOption(this.backgroundColorSelected, config);
+      const selectedBorderColor = '#0000FF';
+
+      gc.fillStyle = selectedColor;
+      gc.fillRect(config.x, config.y, config.width, config.height);
+
+      const drawLeftBorder = !neighborCellSelected(0, -1);
+      const drawRightBorder = !neighborCellSelected(0, 1);
+      const drawTopBorder = !neighborCellSelected(-1, 0);
+      const drawBottomBorder = !neighborCellSelected(1, 0);
+
+      // left border
+      if (drawLeftBorder || drawRightBorder || drawTopBorder || drawBottomBorder) {
+        gc.beginPath();
+        gc.lineWidth = 1;
+
+        if (drawLeftBorder) {
+          gc.moveTo(config.x, config.y);
+          gc.lineTo(config.x, config.y + config.height);
+        }
+
+        if (drawRightBorder) {
+          gc.moveTo(config.x + config.width, config.y);
+          gc.lineTo(config.x + config.width, config.y + config.height);
+        }
+
+        if (drawTopBorder) {
+          gc.moveTo(config.x, config.y);
+          gc.lineTo(config.x + config.width, config.y);
+        }
+
+        if (drawBottomBorder) {
+         gc.moveTo(config.x, config.y + config.height);
+          gc.lineTo(config.x + config.width, config.y + config.height);
+        }
+
+        gc.strokeStyle = selectedBorderColor;
+        gc.stroke();
+      }
+
+      if (!cellState.hilited) {
+        return;
+      }
+    }
+
+    if (cellState.hilited) {
+      let hilitedColor = CellRenderer.resolveOption(this.backgroundColorHilited, config);
+      gc.fillStyle = hilitedColor;
+      gc.fillRect(config.x, config.y, config.width, config.height);
+
+      return;
+    }
 
     // Bail if there is no background color to draw.
     if (!color) {
@@ -278,6 +357,20 @@ namespace TextRenderer {
      * The default is `''`.
      */
     backgroundColor?: CellRenderer.ConfigOption<string>;
+
+    /**
+     * The background color for the cells in selected state.
+     *
+     * The default is `'rgb(184,219,255)'`.
+     */
+    backgroundColorSelected?: CellRenderer.ConfigOption<string>;
+
+    /**
+     * The background color for the cells in highlighted state.
+     *
+     * The default is `'rgba(219,184,255,0.6)'`.
+     */
+    backgroundColorHilited?: CellRenderer.ConfigOption<string>;
 
     /**
      * The vertical alignment for the cell text.

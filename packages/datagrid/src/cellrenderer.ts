@@ -10,6 +10,10 @@ import {
 } from './datamodel';
 
 import {
+  StateModel
+} from './state';
+
+import {
   GraphicsContext
 } from './graphicscontext';
 
@@ -64,6 +68,12 @@ abstract class CellRenderer {
    * The default implementation is a no-op.
    */
   prepare(gc: GraphicsContext, config: CellRenderer.IColumnConfig): void { }
+
+  // TODO try moving individual cell state to ICellConfig 
+  /**
+   * Get/Set the state model for the renderer.
+   */
+  stateModel: StateModel | null;
 }
 
 

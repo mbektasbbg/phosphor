@@ -26,12 +26,24 @@ import {
 } from '@phosphor/widgets';
 
 import {
+  IIterator
+} from '@phosphor/algorithm';
+
+import {
+  Signal, ISignal
+} from '@phosphor/signaling';
+
+import {
   CellRenderer
 } from './cellrenderer';
 
 import {
   DataModel
 } from './datamodel';
+
+import {
+  StateModel, ICellState
+} from './state';
 
 import {
   GraphicsContext
@@ -48,10 +60,6 @@ import {
 import {
   TextRenderer
 } from './textrenderer';
-
-import {
-  Signal, ISignal
-} from '@phosphor/signaling';
 
 
 /**
@@ -80,6 +88,10 @@ class DataGrid extends Widget {
     this._headerVisibility = options.headerVisibility || 'all';
     this._cellRenderers = options.cellRenderers || new RendererMap();
     this._defaultRenderer = options.defaultRenderer || new TextRenderer();
+    this._stateModel = new DataGrid.InteractiveStateModel(this);
+    this._stateModel.selectionChanged.connect(() => {
+      this.repaint();
+    });
 
     // Connect to the renderer map changed signal
     this._cellRenderers.changed.connect(this._onRenderersChanged, this);
@@ -184,6 +196,9 @@ class DataGrid extends Widget {
 
     // Install the layout on the data grid.
     this.layout = layout;
+
+    // Make focusable in order to receive keyboard events
+    this.node.tabIndex = -1;
   }
 
   /**
@@ -192,6 +207,7 @@ class DataGrid extends Widget {
   dispose(): void {
     this._releaseMouse();
     this._model = null;
+    this._stateModel = null;
     this._rowSections.clear();
     this._columnSections.clear();
     this._rowHeaderSections.clear();
@@ -248,6 +264,25 @@ class DataGrid extends Widget {
 
     // Sync the viewport.
     this._syncViewport();
+  }
+
+  /**
+   * Get the state model for the data grid.
+   */
+  get stateModel(): StateModel | null {
+    return this._stateModel;
+  }
+
+  /**
+   * Set the state model for the data grid.
+   */
+  set stateModel(value: StateModel | null) {
+    // Do nothing if the model does not change.
+    if (this._stateModel === value) {
+      return;
+    }
+
+    this._stateModel = value;
   }
 
   /**
@@ -977,6 +1012,7 @@ class DataGrid extends Widget {
     this.node.addEventListener('wheel', this);
     this.node.addEventListener('mousedown', this);
     this._viewport.node.addEventListener('mousemove', this);
+    this.node.addEventListener('keydown', this, true);
     this.repaint(); // TODO actually need to fit the viewport ?
   }
 
@@ -1495,7 +1531,7 @@ class DataGrid extends Widget {
    *
    * @param event - The mouse event that triggered the test.
    */
-  private _hitTestCells(event: MouseEvent) : DataGrid.ICellHit | null {
+  private _hitTestCells(event: MouseEvent) : DataModel.ICellIdentifier | null {
     // Adjust x/y values to account for viewport
     const { clientX, clientY } = event;
     const rect = this._viewport.node.getBoundingClientRect();
@@ -1513,8 +1549,8 @@ class DataGrid extends Widget {
       if (rowIndex !== -1 && columnIndex !== -1) {
         return {
           region: 'corner-header',
-          rowIndex: rowIndex,
-          columnIndex: columnIndex
+          row: rowIndex,
+          column: columnIndex
         };
       }
     }
@@ -1530,8 +1566,8 @@ class DataGrid extends Widget {
       if (bodyRowIndex !== -1 && columnIndex !== -1) {
         return {
           region: 'row-header',
-          rowIndex: bodyRowIndex,
-          columnIndex: columnIndex
+          row: bodyRowIndex,
+          column: columnIndex
         };
       }
     }
@@ -1544,8 +1580,8 @@ class DataGrid extends Widget {
 
       return {
         region: 'column-header',
-        rowIndex: rowIndex,
-        columnIndex: bodyColumnIndex
+        row: rowIndex,
+        column: bodyColumnIndex
       };
     }
 
@@ -1553,8 +1589,8 @@ class DataGrid extends Widget {
     if (bodyRowIndex !== -1 && bodyColumnIndex !== -1) {
       return {
         region: 'body',
-        rowIndex: bodyRowIndex,
-        columnIndex: bodyColumnIndex
+        row: bodyRowIndex,
+        column: bodyColumnIndex
       };
     }
 
@@ -1658,6 +1694,8 @@ class DataGrid extends Widget {
     if (event.keyCode === 27) {
       this._releaseMouse();
     }
+
+    this._keyDown.emit(event);
   }
 
   /**
@@ -1673,32 +1711,42 @@ class DataGrid extends Widget {
 
     // Perform hit testing for resize handles
     const handle = this._hitTestResizeHandles(clientX, clientY);
-    if (handle) {
-      // Stop the event when a resize handle is pressed.
-      event.preventDefault();
-      event.stopPropagation();
 
-      // Look up the cursor for the handle.
-      const cursor = Private.cursorForHandle(handle);
+    // Perform hit testing for cells
+    const cellHit = this._hitTestCells(event);
 
-      // Override the document cursor.
-      const override = Drag.overrideCursor(cursor);
-
-      // Set up the press data.
-      this._pressData = { handle, clientX, clientY, override };
+    // Set up the press data.
+    if (handle || cellHit) {
+      this._pressData = { clientX, clientY };
 
       // Add the extra document listeners.
       document.addEventListener('mousemove', this, true);
       document.addEventListener('mouseup', this, true);
       document.addEventListener('keydown', this, true);
       document.addEventListener('contextmenu', this, true);
-      return;
     }
 
-    // Perform hit testing for cells
-    const cellHit = this._hitTestCells(event);
+    if (handle) {
+      // Stop the event when a resize handle is pressed.
+      event.preventDefault();
+      event.stopPropagation();
+
+      this._pressData!.handle = handle;
+
+      // Look up the cursor for the handle.
+      const cursor = Private.cursorForHandle(handle);
+
+      // Override the document cursor.
+      this._pressData!.override = Drag.overrideCursor(cursor);
+
+      
+      //return;
+    } else if (cellHit) {
+      this._pressData!.cell = cellHit;
+    }
+
     if (cellHit) {
-      this._cellClick.emit({ cell: cellHit, event: event });
+      this._cellMouseDown.emit({ cell: cellHit, event: event });
     }
   }
 
@@ -1728,8 +1776,18 @@ class DataGrid extends Widget {
     this._pressData.clientX = event.clientX;
     this._pressData.clientY = event.clientY;
 
-    // Post a section resize request message to the viewport.
-    MessageLoop.postMessage(this._viewport, Private.SectionResizeRequest);
+    if (this._pressData.handle) {
+      // Post a section resize request message to the viewport.
+      MessageLoop.postMessage(this._viewport, Private.SectionResizeRequest);
+    } else {
+      // Emit cell mouse move message
+      const cellHit = this._hitTestCells(event);
+
+      if (cellHit) {
+        this._viewport.node.style.cursor = 'cell';
+        this._cellMouseMove.emit({ cell: cellHit, event: event });
+      }
+    }
   }
 
   /**
@@ -1744,6 +1802,17 @@ class DataGrid extends Widget {
     // Stop the event when releasing the mouse.
     event.preventDefault();
     event.stopPropagation();
+
+    // If not from resize operation, emit cell mouse up event
+    if (!this._pressData || !this._pressData.handle) {
+      const cellHit = this._hitTestCells(event);
+
+      if (cellHit) {
+        this._cellMouseUp.emit({ cell: cellHit, event: event });
+        // reset mouse cursor
+        this._viewport.node.style.cursor = '';
+      }
+    }
 
     // Finalize the mouse release.
     this._releaseMouse();
@@ -1826,7 +1895,9 @@ class DataGrid extends Widget {
     }
 
     // Clear the press data and cursor override.
-    this._pressData.override.dispose();
+    if (this._pressData.override) {
+      this._pressData.override.dispose();
+    }
     this._pressData = null;
 
     // Remove the extra document listeners.
@@ -1875,7 +1946,8 @@ class DataGrid extends Widget {
     }
 
     // Extract the relevant press data.
-    let { handle, clientX, clientY } = this._pressData;
+    let { clientX, clientY } = this._pressData;
+    const handle = this._pressData.handle!;
 
     // Convert the client position to viewport coordinates.
     let rect = this._viewport.node.getBoundingClientRect();
@@ -3203,6 +3275,9 @@ class DataGrid extends Widget {
         this._cellRenderers.get(rgn.region, metadata) || this._defaultRenderer
       );
 
+      // TODO move cell state to config
+      renderer.stateModel = this._stateModel;
+
       // Prepare the cell renderer for drawing the column.
       try {
         renderer.prepare(gc, config);
@@ -3376,10 +3451,38 @@ class DataGrid extends Widget {
   }
 
   /**
-   * A signal emitted when the data grid has been clicked on.
+   * A signal emitted when a cell has been clicked on.
    */
   get cellClick(): ISignal<this, DataGrid.ICellClick> {
     return this._cellClick;
+  }
+
+  /**
+   * A signal emitted when mouse is down on a cell.
+   */
+  get cellMouseDown(): ISignal<this, DataGrid.ICellMouseDown> {
+    return this._cellMouseDown;
+  }
+
+  /**
+   * A signal emitted when mouse is moved over a cell.
+   */
+  get cellMouseMove(): ISignal<this, DataGrid.ICellMouseMove> {
+    return this._cellMouseMove;
+  }
+
+  /**
+   * A signal emitted when mouse is released over a cell.
+   */
+  get cellMouseUp(): ISignal<this, DataGrid.ICellMouseUp> {
+    return this._cellMouseUp;
+  }
+
+  /**
+   * A signal emitted when a key is down while data grid has focus.
+   */
+  get keyDown(): ISignal<this, KeyboardEvent> {
+    return this._keyDown;
   }
 
   private _viewport: Widget;
@@ -3411,6 +3514,7 @@ class DataGrid extends Widget {
   private _columnHeaderSections: SectionList;
 
   private _model: DataModel | null = null;
+  private _stateModel: StateModel | null = null;
 
   private _style: DataGrid.IStyle;
   private _cellRenderers: RendererMap;
@@ -3418,6 +3522,10 @@ class DataGrid extends Widget {
   private _headerVisibility: DataGrid.HeaderVisibility;
 
   protected _cellClick = new Signal<this, DataGrid.ICellClick>(this);
+  protected _cellMouseDown = new Signal<this, DataGrid.ICellMouseDown>(this);
+  protected _cellMouseMove = new Signal<this, DataGrid.ICellMouseMove>(this);
+  protected _cellMouseUp = new Signal<this, DataGrid.ICellMouseUp>(this);
+  protected _keyDown = new Signal<this, KeyboardEvent>(this);
 }
 
 
@@ -3583,28 +3691,6 @@ namespace DataGrid {
   }
 
   /**
-   * An arguments object for the cell hit test.
-   *
-   */
-  export
-  interface ICellHit {
-    /**
-     * The region which contains the cell.
-     */
-    readonly region: DataModel.CellRegion;
-
-    /**
-     * The row index of the cell hit.
-     */
-    readonly rowIndex: number;
-
-    /**
-     * The column index of the cell hit.
-     */
-    readonly columnIndex: number;
-  }
-
-  /**
    * An arguments object for `cellClick` signal.
    *
    */
@@ -3613,13 +3699,64 @@ namespace DataGrid {
     /**
      * The cell hit.
      */
-    readonly cell: ICellHit;
+    readonly cell: DataModel.ICellIdentifier;
 
     /**
      * The mouse event that triggered the `cellClick` signal.
      */
     readonly event: MouseEvent;
-  }
+  };
+
+  /**
+   * An arguments object for `cellMouseDown` signal.
+   *
+   */
+  export
+  interface ICellMouseDown {
+    /**
+     * The cell hit.
+     */
+    readonly cell: DataModel.ICellIdentifier;
+
+    /**
+     * The mouse event that triggered the `cellMouseDown` signal.
+     */
+    readonly event: MouseEvent;
+  };
+
+    /**
+   * An arguments object for `cellMouseMove` signal.
+   *
+   */
+  export
+  interface ICellMouseMove {
+    /**
+     * The cell hit.
+     */
+    readonly cell: DataModel.ICellIdentifier;
+
+    /**
+     * The mouse event that triggered the `cellMouseMove` signal.
+     */
+    readonly event: MouseEvent;
+  };
+
+  /**
+   * An arguments object for `cellMouseUp` signal.
+   *
+   */
+  export
+  interface ICellMouseUp {
+    /**
+     * The cell hit.
+     */
+    readonly cell: DataModel.ICellIdentifier;
+
+    /**
+     * The mouse event that triggered the `cellMouseUp` signal.
+     */
+    readonly event: MouseEvent;
+  };
 
   /**
    * The default theme for a data grid.
@@ -3631,6 +3768,383 @@ namespace DataGrid {
     gridLineColor: 'rgba(20, 20, 20, 0.15)',
     headerBackgroundColor: '#F3F3F3',
     headerGridLineColor: 'rgba(20, 20, 20, 0.25)'
+  };
+
+  interface ICellRectangle {
+    startRow: number;
+    endRow: number;
+    startColumn: number;
+    endColumn: number;
+  };
+
+  function _swapObjectProperty(obj: any, lhs: string, rhs: string):void {
+    const tmp: any = obj[lhs];
+    obj[lhs] = obj[rhs];
+    obj[rhs] = tmp;
+  }
+
+  class CellRectangle implements ICellRectangle {
+    constructor(options?: CellRectangle.IOptions) {
+      if (options) {
+        this._startRow = options.startRow;
+        this._endRow = options.endRow !== undefined ? options.endRow : this._startRow;
+        this._startColumn = options.startColumn;
+        this._endColumn = options.endColumn !== undefined ? options.endColumn : this._startColumn;     
+
+        if (this._startRow > this._endRow) {
+          _swapObjectProperty(this, '_startRow', '_endRow');
+        }
+
+        if (this._startColumn > this._endColumn) {
+          _swapObjectProperty(this, '_startColumn', '_endColumn');
+        }
+      }
+    }
+
+    get startRow(): number {
+      return this._startRow;
+    }
+
+    get endRow(): number {
+      return this._endRow;
+    }
+
+    get startColumn(): number {
+      return this._startColumn;
+    }
+
+    get endColumn(): number {
+      return this._endColumn;
+    }
+
+    get numRows(): number {
+      return this._endRow - this._startRow + 1;
+    }
+
+    get numColumns(): number {
+      return this._endColumn - this._startColumn + 1;
+    }
+
+    get numCells(): number {
+      return this.numRows * this.numColumns;
+    }
+
+    /**
+     * convert row major index to row & column
+     */
+    indexToRowCol(index: number): { row: number, column: number } | undefined {
+      const numRows = this.numRows;
+      const numColumns = this.numColumns;
+      if (index > (numRows * numColumns - 1)) {
+        return undefined;
+      }
+
+      return {
+        row: this._startRow + Math.floor(index / numColumns),
+        column: this._startColumn + index % numColumns
+      };
+    }
+
+    private _startRow: number = -1;
+    private _endRow: number = -1;
+    private _startColumn: number = -1;
+    private _endColumn: number = -1;
+  }
+
+  namespace CellRectangle {
+    export
+    interface IOptions {
+      startRow: number;
+      endRow?: number;
+      startColumn: number;
+      endColumn?: number;
+    };
+  };
+
+  class CellGroup implements IIterator<DataModel.ICellIdentifier> {
+    /**
+     * Get an iterator over the object's values.
+     *
+     * @returns An iterator which yields the object's values.
+     */
+    iter(): IIterator<DataModel.ICellIdentifier> {
+      this._rectIndex = 0;
+      this._cellIndex = 0;
+      return this;
+    }
+
+    /**
+     * Create an independent clone of the iterator.
+     *
+     * @returns A new independent clone of the iterator.
+     */
+    clone(): IIterator<DataModel.ICellIdentifier> {
+      let result = new CellGroup();
+      // TODO: clone or reference this object
+      return result;
+    }
+
+    /**
+     * Get the next value from the iterator.
+     *
+     * @returns The next value from the iterator, or `undefined`.
+     */
+    next(): DataModel.ICellIdentifier | undefined {
+      if (this._rectIndex >= this._cellRects.length) {
+        return undefined;
+      }
+
+      const rect = this._cellRects[this._rectIndex];
+      const rowCol = rect.indexToRowCol(this._cellIndex++);
+      if (!rowCol) {
+        this._rectIndex++;
+        this._cellIndex = 0;
+        return this.next();
+      }
+
+      return {
+        region: 'body',
+        row: rowCol.row,
+        column: rowCol.column
+      };
+    }
+    
+    addRectangle(rect: CellRectangle): boolean {
+      //return this.joinRectangle(rect);
+      this._cellRects.push(rect);
+      return true;
+      
+    }
+
+    joinRectangle(rect: CellRectangle): boolean {
+      // if rect is contained by another rect, noop
+      for (let cellRect of this._cellRects) {
+        if (this._rectangleContainsOther(cellRect, rect)) {
+          return true;
+        }
+      }
+      // if rect contains other rects delete other rects
+      for (let i = 0; i < this._cellRects.length; ++i) {
+        const cellRect = this._cellRects[i];
+        if (this._rectangleContainsOther(rect, cellRect)) {
+          // TODO add start index
+          this._cellRects.splice(i, 1);
+          return this.joinRectangle(rect);
+        }
+      }
+
+      // if rect intersects other rects
+
+      // else
+      this._cellRects.push(rect);
+
+      return true;
+    }
+
+    removeRectangle(rect: CellRectangle): boolean {
+      // TODO
+      return false;
+    }
+
+    addCell(cell: DataModel.ICellIdentifier): boolean {
+      if (this.containsCell(cell)) {
+        return false;
+      }
+
+      this._cellRects.push(
+        new CellRectangle({ startRow: cell.row, startColumn: cell.column})
+      );
+
+      return true;
+    }
+
+    removeCell(cell: DataModel.ICellIdentifier): boolean {
+      // TODO
+      return false;
+    }
+
+    containsCell(cell: DataModel.ICellIdentifier): boolean {
+      for (let rect of this._cellRects) {
+        if (this._cellInRectangle(cell, rect)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    clear(): void {
+      this._cellRects = [];
+    }
+
+    private _rectangleContainsOther(rect: ICellRectangle, other: ICellRectangle): boolean {
+      const intersections = [
+      this._cellInRectangle({region: 'body', row: other.startRow, column: other.startColumn}, rect),
+        this._cellInRectangle({region: 'body', row: other.startRow, column: other.endColumn}, rect),
+        this._cellInRectangle({region: 'body', row: other.endRow, column: other.startColumn}, rect),
+        this._cellInRectangle({region: 'body', row: other.endRow, column: other.endColumn}, rect)
+      ];
+
+      return intersections.every((value) => value);
+    }
+
+    // private _rectanglesIntersect(lhs: ICellRectangle, rhs: ICellRectangle): boolean {
+    //   return this._cellInRectangle({region: 'body', row: lhs.startRow, column: lhs.startColumn}, rhs) ||
+    //     this._cellInRectangle({region: 'body', row: lhs.startRow, column: lhs.endColumn}, rhs) ||
+    //     this._cellInRectangle({region: 'body', row: lhs.endRow, column: lhs.startColumn}, rhs) ||
+    //     this._cellInRectangle({region: 'body', row: lhs.endRow, column: lhs.endColumn}, rhs);
+    // }
+
+    private _cellInRectangle(cell: DataModel.ICellIdentifier, rect: ICellRectangle): boolean {
+      return cell.row >=  rect.startRow && cell.row <=  rect.endRow &&
+          cell.column >=  rect.startColumn && cell.column <=  rect.endColumn;
+    }
+
+    private _cellRects: CellRectangle[] = [];
+    private _rectIndex: number = 0;
+    private _cellIndex: number = 0;
+  };
+
+  export
+  class InteractiveStateModel extends StateModel {
+    constructor(dataGrid: DataGrid) {
+      super();
+
+      dataGrid.cellMouseDown.connect(this._onGridCellMouseDown, this);
+      dataGrid.cellMouseMove.connect(this._onGridCellMouseMove, this);
+      dataGrid.cellMouseUp.connect(this._onGridCellMouseUp, this);
+      dataGrid.keyDown.connect(this._onGridKeyDown, this);
+    }
+
+    cellState(region: DataModel.CellRegion, row: number, column: number): ICellState {
+      const cell: DataModel.ICellIdentifier = {
+        region: region,
+        row: row,
+        column: column
+      };
+
+      return {
+        enabled: true,
+        selected: cell.region === 'body' ? this._cellIsSelected(cell) : false,
+        hilited: cell.region === 'body' ? this._cellIsHilited(cell) : false,
+        hovered: false
+      };
+    }
+
+    private _cellIsSelected(cell: DataModel.ICellIdentifier): boolean {
+      return this._selections.containsCell(cell);
+    }
+
+    private _cellIsHilited(cell: DataModel.ICellIdentifier): boolean {
+      return this._hilites.containsCell(cell);
+    }
+
+    private _cellAtMouseDown: DataModel.ICellIdentifier | null;
+
+    private _onGridCellMouseDown(sender: DataGrid, args: DataGrid.ICellMouseDown) {
+      this._cellAtMouseDown = args.cell;
+    }
+
+    private _calculateCoveredCellRegion(
+        grid: DataGrid,
+        startCell: DataModel.ICellIdentifier,
+        endCell: DataModel.ICellIdentifier): CellRectangle | undefined {
+
+      if (startCell.region !== endCell.region) {
+        return undefined;
+      }
+      
+      if (endCell.region === 'body') {
+        return new CellRectangle({
+          startRow: startCell.row, startColumn: startCell.column,
+          endRow: endCell.row, endColumn: endCell.column
+        });
+      } else if (endCell.region === 'row-header') {
+        const columnCount = grid.model!.columnCount('body');
+        return new CellRectangle({
+          startRow: startCell.row, startColumn: 0,
+          endRow: endCell.row, endColumn: (columnCount - 1)
+        });
+      } else if (endCell.region === 'column-header') {
+        const rowCount = grid.model!.rowCount('body');
+        return new CellRectangle({
+          startRow: 0, startColumn: startCell.column,
+          endRow: (rowCount - 1), endColumn: endCell.column
+        });
+      } else if (endCell.region === 'corner-header') {
+        const rowCount = grid.model!.rowCount('body');
+        const columnCount = grid.model!.columnCount('body');
+        return new CellRectangle({
+          startRow: 0, startColumn: 0,
+          endRow: (rowCount - 1), endColumn: (columnCount - 1)
+        });
+      }
+    }
+
+    private _onGridCellMouseMove(sender: DataGrid, args: DataGrid.ICellMouseDown) {
+      if (this._cellAtMouseDown && args.event.buttons === 1) {
+        const coveredRect = this._calculateCoveredCellRegion(sender, this._cellAtMouseDown, args.cell);
+        this._hilites.clear();
+        if (coveredRect) {
+          this._hilites.addRectangle(coveredRect);
+        }
+
+       this.emitSelectionChanged();
+      }
+    }
+
+    private _ctrlOrCmdDown(event: MouseEvent) {
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      return isMac ? event.metaKey : event.ctrlKey;
+    }
+
+    private _onGridCellMouseUp(sender: DataGrid, args: DataGrid.ICellMouseUp) {
+      if (!this._ctrlOrCmdDown(args.event)) {
+        this._selections.clear();
+      }
+
+      const coveredRect = (args.event.shiftKey && this._previousMouseUp) ?
+        this._calculateCoveredCellRegion(sender, this._previousMouseUp.cell!, args.cell) :
+        this._calculateCoveredCellRegion(sender, this._cellAtMouseDown!, args.cell);
+
+      if (coveredRect) {
+        this._selections.addRectangle(coveredRect);
+      }
+
+      this._hilites.clear();
+      this.emitSelectionChanged();
+
+      this._cellAtMouseDown = null;
+      this._previousMouseUp = args;
+    }
+
+    private _onGridKeyDown(sender: DataGrid, args: KeyboardEvent) {
+      if (args.keyCode === 27) {
+        this._hilites.clear();
+        this._selections.clear();
+        this.emitSelectionChanged();
+      }
+    }
+
+    get selectionChanged(): ISignal<this, void> {
+      return this._selectionChanged;
+    }
+
+    get selections(): IIterator<DataModel.ICellIdentifier> {
+      return this._selections.iter();
+    }
+
+    get highlights(): IIterator<DataModel.ICellIdentifier> {
+      return this._hilites.iter();
+    }
+
+    private emitSelectionChanged() {
+      this._selectionChanged.emit(void 0);
+    }
+
+    private _selections: CellGroup = new CellGroup();
+    private _hilites: CellGroup = new CellGroup();
+    private _selectionChanged = new Signal<this, void>(this);
+    private _previousMouseUp: DataGrid.ICellMouseUp;
   };
 }
 
@@ -3786,7 +4300,12 @@ namespace Private {
     /**
      * The resize handle which was pressed.
      */
-    handle: IResizeHandle;
+    handle?: IResizeHandle;
+
+    /**
+     * The cell which was pressed.
+     */
+    cell?: DataModel.ICellIdentifier;
 
     /**
      * The most recent client X position of the mouse.
@@ -3801,7 +4320,7 @@ namespace Private {
     /**
      * The disposable which will clear the override cursor.
      */
-    override: IDisposable;
+    override?: IDisposable;
   }
 
   /**
