@@ -242,6 +242,9 @@ class JSONCellEditor extends CellEditor {
     this._textarea.focus();
   }
 
+  validate() {
+  }
+
   serialize(): any {
     return JSON.parse(this._textarea.value);
   }

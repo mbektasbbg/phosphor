@@ -170,6 +170,7 @@ class NumberInputValidator implements ICellInputValidator {
 export
 abstract class CellEditor implements ICellEditor, IDisposable {
   protected abstract startEditing(): void;
+  protected abstract validate(): void;
   protected abstract serialize(): any;
 
   /**
@@ -325,6 +326,17 @@ abstract class CellEditor implements ICellEditor, IDisposable {
     this._form = document.createElement('form');
     this._form.className = 'cell-editor-form';
     this._cellContainer.appendChild(this._form);
+
+    this._cellContainer.addEventListener('mouseleave', (event: MouseEvent) => {
+    //  this.validate();
+      this._viewportOccluder.style.pointerEvents = this.validInput ? 'none' : 'auto';
+    });
+
+    this._cellContainer.addEventListener('mouseenter', (event: MouseEvent) => {
+      //this.validate();
+      this._viewportOccluder.style.pointerEvents = 'none';
+    });
+
   }
 
   protected updatePosition(): void {
@@ -472,8 +484,27 @@ class TextCellEditor extends CellEditor {
   }
 
   _onInput(event: Event) {
-    this._input.setCustomValidity("");
-    this.validInput = true;
+    this.validate();
+  }
+
+  protected validate() {
+    const value = this._input.value;
+
+    if (value.trim() === '') {
+      return;
+    }
+
+    if (this._validator) {
+      const result = this._validator.validate(this._cell, value);
+      if (result.valid) {
+        this.validInput = true;
+        this._input.setCustomValidity("");
+      } else {
+        this.validInput = false;
+        this._input.setCustomValidity(result.message || DEFAULT_INVALID_INPUT_MESSAGE);
+        this._form.reportValidity();
+      }
+    }
   }
 
   protected serialize(): any {
@@ -682,6 +713,19 @@ class DateCellEditor extends CellEditor {
     }
   }
 
+  protected validate() {
+    const value = this._input.value;
+
+    if (this._validator) {
+      const result = this._validator.validate(this._cell, value);
+      if (!result.valid) {
+        this.validInput = false;
+        this._input.setCustomValidity(result.message || DEFAULT_INVALID_INPUT_MESSAGE);
+        this._form.reportValidity();
+      }
+    }
+  }
+
   protected serialize(): any {
     const value = this._input.value;
 
@@ -792,6 +836,19 @@ class BooleanCellEditor extends CellEditor {
     }
   }
 
+  protected validate() {
+    const value = this._input.checked;
+
+    if (this._validator) {
+      const result = this._validator.validate(this._cell, value);
+      if (!result.valid) {
+        this.validInput = false;
+        this._input.setCustomValidity(result.message || DEFAULT_INVALID_INPUT_MESSAGE);
+        this._form.reportValidity();
+      }
+    }
+  }
+
   protected serialize(): any {
     const value = this._input.checked;
 
@@ -899,6 +956,19 @@ class OptionCellEditor extends CellEditor {
       event.preventDefault();
       event.stopPropagation();
       this._select.focus();
+    }
+  }
+
+  protected validate() {
+    const value = this._select.value;
+
+    if (this._validator) {
+      const result = this._validator.validate(this._cell, value);
+      if (!result.valid) {
+        this.validInput = false;
+        this._select.setCustomValidity(result.message || DEFAULT_INVALID_INPUT_MESSAGE);
+        this._form.reportValidity();
+      }
     }
   }
 
@@ -1023,6 +1093,19 @@ class DynamicOptionCellEditor extends CellEditor {
       event.preventDefault();
       event.stopPropagation();
       this._input.focus();
+    }
+  }
+
+  protected validate() {
+    const value = this._input.value;
+
+    if (this._validator) {
+      const result = this._validator.validate(this._cell, value);
+      if (!result.valid) {
+        this.validInput = false;
+        this._input.setCustomValidity(result.message || DEFAULT_INVALID_INPUT_MESSAGE);
+        this._form.reportValidity();
+      }
     }
   }
 

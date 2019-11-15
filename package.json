@@ -3,6 +3,7 @@
   "scripts": {
     "build": "lerna run build",
     "build:examples": "lerna run build --scope \"@phosphor/example-*\"",
+    "build:datagrid": "lerna run build --scope \"@phosphor/*datagrid*\"",
     "build:src": "lerna run build --scope \"@phosphor/!(test-|example-)*\"",
     "build:test": "lerna run build:test",
     "clean": "lerna run clean",
